@@ -98,13 +98,51 @@ fn version_1_0_is_the_default() {
     );
 }
 
-// The formatter does not lay out multiline inline tables yet (it moves the
-// comment after the closing brace), but its output keeps the comment and the value.
-#[test]
-fn formatting_a_multiline_inline_table_keeps_its_comment_and_value() {
-    let src = "inline = {\n a = 1, # one\n b = 2,\n}\n";
+fn format11(src: &str, options: crate::formatter::Options) -> String {
     let syntax = parse_with(src, TomlVersion::V1_1, None).into_syntax();
-    let formatted = crate::formatter::format_syntax(syntax, Default::default());
-    assert!(formatted.contains("# one"), "{formatted}");
-    assert_eq!(v11(&formatted), v11(src));
+    crate::formatter::format_syntax(syntax, options)
+}
+
+// A multiline inline table keeps one entry or comment per line, so every comment stays put.
+#[test]
+fn formatting_lays_out_multiline_inline_tables() {
+    for (src, expected) in [
+        (
+            "inline = {\n a = 1, # one\n   # standalone\n\n\n\n b = 2 # two\n} # after\n",
+            "inline = {\n  a = 1, # one\n  # standalone\n\n\n  b = 2, # two\n} # after\n",
+        ),
+        (
+            "inline = { # open\n a = 1\n}\n",
+            "inline = { # open\n  a = 1,\n}\n",
+        ),
+        (
+            "outer = {\n inner = {\n x = 1, # deep\n },\n flat = { y = 2 },\n}\n",
+            "outer = {\n  inner = {\n    x = 1, # deep\n  },\n  flat = { y = 2 },\n}\n",
+        ),
+        ("empty = {\n\n}\n", "empty = {}\n"),
+        ("single = { a = 1, b = 2 }\n", "single = { a = 1, b = 2 }\n"),
+    ] {
+        let formatted = format11(src, Default::default());
+        assert_eq!(formatted, expected, "{src:?}");
+        assert_eq!(v11(&formatted), v11(src), "{src:?}");
+        assert_eq!(
+            format11(&formatted, Default::default()),
+            formatted,
+            "{src:?}"
+        );
+    }
+}
+
+#[test]
+fn multiline_inline_tables_follow_comma_and_newline_options() {
+    let src = "t = {\n a = 1,\n b = 2, # b\n}\n";
+    let options = crate::formatter::Options {
+        array_trailing_comma: false,
+        crlf: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        format11(src, options),
+        "t = {\r\n  a = 1,\r\n  b = 2 # b\r\n}\r\n"
+    );
 }

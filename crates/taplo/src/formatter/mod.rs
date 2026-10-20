@@ -59,7 +59,7 @@ create_options!(
         pub align_single_comments: bool,
 
         /// Put trailing commas for multiline
-        /// arrays.
+        /// arrays and TOML 1.1 multiline inline tables.
         pub array_trailing_comma: bool,
 
         /// Automatically expand arrays to multiple lines once they
@@ -866,6 +866,11 @@ fn format_inline_table(
     }
     let context = &context;
 
+    if node.children_with_tokens().any(|c| c.kind() == NEWLINE) {
+        let formatted = format_multiline_inline_table(&node, options, context);
+        return (node.into(), formatted, None);
+    }
+
     let child_count = node.children().count();
 
     if node.children().count() == 0 {
@@ -940,6 +945,95 @@ fn format_inline_table(
 
     (node.into(), formatted, comment)
 }
+// A TOML 1.1 inline table that spans lines keeps one entry or comment per line, so its
+// comments stay where they were written. Entries are not reordered.
+fn format_multiline_inline_table(
+    node: &SyntaxNode,
+    options: &Options,
+    context: &Context,
+) -> String {
+    let mut inner = context.clone();
+    inner.indent_level += 1;
+
+    let entries = node.children().count();
+    let mut entry_index = 0;
+    let mut opening_comment = None;
+    // An entry with its comma, a standalone comment, or an empty string for a blank line,
+    // each with an optional trailing comment.
+    let mut lines: Vec<(String, Option<String>)> = Vec::new();
+    let mut last = BRACE_START;
+
+    for c in node.children_with_tokens() {
+        match c {
+            NodeOrToken::Node(n) => {
+                // A comment after an entry without a comma belongs to the entry node.
+                let formatted = format_entry(n, options, &inner);
+                let mut entry = String::new();
+                formatted.write_to(&mut entry, options);
+                entry_index += 1;
+                if entry_index < entries || options.array_trailing_comma {
+                    entry += ",";
+                }
+                lines.push((entry, formatted.comment.clone()));
+                last = ENTRY;
+            }
+            NodeOrToken::Token(t) => match t.kind() {
+                COMMENT => {
+                    let comment = t.text().to_string();
+                    match last {
+                        BRACE_START => opening_comment = Some(comment),
+                        ENTRY | COMMA => lines.last_mut().unwrap().1 = Some(comment),
+                        _ => lines.push((comment, None)),
+                    }
+                    last = COMMENT;
+                }
+                NEWLINE => {
+                    let blank = t.text().newline_count().saturating_sub(1);
+                    for _ in 0..blank.min(options.allowed_blank_lines) {
+                        lines.push((String::new(), None));
+                    }
+                    last = NEWLINE;
+                }
+                COMMA if last == ENTRY => last = COMMA,
+                _ => {}
+            },
+        }
+    }
+
+    let is_blank = |line: &(String, Option<String>)| line.0.is_empty() && line.1.is_none();
+    let start = lines
+        .iter()
+        .position(|l| !is_blank(l))
+        .unwrap_or(lines.len());
+    let end = lines
+        .iter()
+        .rposition(|l| !is_blank(l))
+        .map_or(start, |i| i + 1);
+
+    let mut formatted = String::from("{");
+    if let Some(comment) = opening_comment {
+        formatted += " ";
+        formatted += &comment;
+    } else if start == end {
+        return "{}".into();
+    }
+    for (text, comment) in &lines[start..end] {
+        formatted += options.newline();
+        if !text.is_empty() {
+            formatted.extend(inner.indent(options));
+            formatted += text;
+        }
+        if let Some(comment) = comment {
+            formatted += " ";
+            formatted += comment;
+        }
+    }
+    formatted += options.newline();
+    formatted.extend(context.indent(options));
+    formatted += "}";
+    formatted
+}
+
 // Check whether the array spans multiple lines in its current form.
 fn is_array_multiline(node: &SyntaxNode) -> bool {
     node.descendants_with_tokens().any(|n| n.kind() == NEWLINE)
