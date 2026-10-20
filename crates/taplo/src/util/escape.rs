@@ -1,3 +1,4 @@
+use crate::parser::TomlVersion;
 use logos::{Lexer, Logos};
 
 /// Escaping based on:
@@ -11,6 +12,8 @@ use logos::{Lexer, Logos};
 /// \\         - backslash       (U+005C)
 /// \uXXXX     - unicode         (U+XXXX)
 /// \UXXXXXXXX - unicode         (U+XXXXXXXX)
+/// \e         - escape          (U+001B), TOML 1.1
+/// \xHH       - unicode         (U+00HH), TOML 1.1
 #[derive(Logos, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Escape {
     #[token(r#"\b"#)]
@@ -36,6 +39,12 @@ pub enum Escape {
 
     #[token(r#"\\"#)]
     Backslash,
+
+    #[token(r#"\e"#)]
+    Esc,
+
+    #[regex(r#"\\x[0-9A-Fa-f][0-9A-Fa-f]"#)]
+    Hex,
 
     // Same thing repeated 4 times, but the {n} repetition syntax is not supported by Logos
     #[regex(r#"\\u[0-9A-Fa-f_][0-9A-Fa-f_][0-9A-Fa-f_][0-9A-Fa-f_]"#)]
@@ -91,6 +100,12 @@ pub fn unescape(s: &str) -> Result<String, usize> {
             CarriageReturn => new_s += "\u{000D}",
             Quote => new_s += "\u{0022}",
             Backslash => new_s += "\u{005C}",
+            Esc => new_s += "\u{001B}",
+            Hex => {
+                let byte =
+                    u8::from_str_radix(&lexer.slice()[2..], 16).map_err(|_| lexer.span().start)?;
+                new_s.push(char::from(byte));
+            }
             Newline => {}
             Unicode => {
                 new_s += &std::char::from_u32(
@@ -119,6 +134,11 @@ pub fn unescape(s: &str) -> Result<String, usize> {
 /// Same as unescape, but doesn't create a new
 /// unescaped string, and returns all invalid escape indices.
 pub fn check_escape(s: &str) -> Result<(), Vec<usize>> {
+    check_escape_in(s, TomlVersion::V1_0)
+}
+
+/// [`check_escape`] for the escapes of a given TOML version.
+pub fn check_escape_in(s: &str, version: TomlVersion) -> Result<(), Vec<usize>> {
     let mut lexer: Lexer<Escape> = Lexer::new(s);
     let mut invalid = Vec::new();
 
@@ -131,6 +151,8 @@ pub fn check_escape(s: &str) -> Result<(), Vec<usize>> {
             CarriageReturn => {}
             Quote => {}
             Backslash => {}
+            Esc | Hex if version < TomlVersion::V1_1 => invalid.push(lexer.span().start),
+            Esc | Hex => {}
             Newline => {}
             Unicode => {
                 let char_val = match u32::from_str_radix(&lexer.slice()[2..], 16) {

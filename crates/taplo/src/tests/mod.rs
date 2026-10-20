@@ -5,6 +5,7 @@ mod generated {
 }
 
 mod formatter;
+mod toml11;
 
 #[test]
 fn cached_parse_matches_and_shares_across_reparses() {

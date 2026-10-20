@@ -8,7 +8,7 @@ pub(crate) mod shared;
 mod escape;
 pub mod syntax;
 
-pub use escape::check_escape;
+pub use escape::{check_escape, check_escape_in};
 pub use escape::{escape, unescape};
 
 pub(crate) mod allowed_chars {

@@ -668,6 +668,10 @@ impl DateTime {
                     }
                 }
 
+                if token.kind() != SyntaxKind::DATE {
+                    with_seconds(&mut text);
+                }
+
                 match token.kind() {
                     SyntaxKind::DATE_TIME_OFFSET => {
                         if let Ok(d) = time::OffsetDateTime::parse(
@@ -724,6 +728,17 @@ impl DateTime {
         } else {
             Err(self.errors())
         }
+    }
+}
+
+/// TOML 1.1 lets seconds be omitted; decode `HH:MM` as `HH:MM:00`.
+fn with_seconds(text: &mut String) {
+    let start = text.find('T').map_or(0, |i| i + 1);
+    let end = text[start..]
+        .find(['Z', '+', '-'])
+        .map_or(text.len(), |i| start + i);
+    if text[start..end].matches(':').count() == 1 {
+        text.insert_str(end, ":00");
     }
 }
 
