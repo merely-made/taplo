@@ -74,9 +74,7 @@ impl FromSyntax for Table {
                     .map(|n| n.children().map(|syntax| entry_from_syntax(syntax.into())));
 
                 if let Some(entries) = entries {
-                    for (key, node) in entries {
-                        table.add_entry(key, node);
-                    }
+                    table.add_entries(entries);
                 }
 
                 table
@@ -486,7 +484,8 @@ fn root_from_syntax(syntax: SyntaxElement) -> Table {
 
     let mut current_table: Table = root_table.clone();
 
-    for child in node.children() {
+    let mut children = node.children().peekable();
+    while let Some(child) = children.next() {
         match child.kind() {
             table_kind @ (TABLE_ARRAY_HEADER | TABLE_HEADER) => {
                 let mut keys = keys_from_syntax(
@@ -603,8 +602,12 @@ fn root_from_syntax(syntax: SyntaxElement) -> Table {
                 }
             }
             ENTRY => {
-                let (key, node) = entry_from_syntax(child.into());
-                current_table.add_entry(key, node);
+                // Never cross a header boundary: its conflict/association logic stays unchanged.
+                let mut entries = vec![entry_from_syntax(child.into())];
+                while children.peek().is_some_and(|n| n.kind() == ENTRY) {
+                    entries.push(entry_from_syntax(children.next().unwrap().into()));
+                }
+                current_table.add_entries(entries);
             }
             _ => {}
         }
