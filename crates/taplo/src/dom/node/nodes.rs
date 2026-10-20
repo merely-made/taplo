@@ -85,37 +85,50 @@ impl Table {
 
     /// Add an entry and also collect errors on conflicts.
     pub(crate) fn add_entry(&self, key: Key, node: Node) {
-        self.inner.entries.update(|entries| {
-            if let Some((existing_key, value)) = entries.lookup.get_key_value(&key) {
-                // Merge the two pseudo-tables together.
-                if let (Node::Table(existing_table), Node::Table(new_table)) = (value, &node) {
-                    if existing_table.inner.kind == TableKind::Pseudo
-                        && new_table.inner.kind == TableKind::Pseudo
-                    {
-                        let new_entries = new_table.entries().read();
-                        for (k, n) in new_entries.iter() {
-                            if let Some(additional_syntax) = k.syntax() {
-                                existing_key.inner.additional_syntaxes.update(|syntaxes| {
-                                    syntaxes.push(additional_syntax.clone());
-                                });
-                            }
+        self.inner
+            .entries
+            .update(|entries| self.add_entry_into(entries, key, node));
+    }
 
-                            existing_table.add_entry(k.clone(), n.clone());
+    // Called only while FromSyntax privately constructs an unpublished table.
+    pub(crate) fn add_entries(&self, entries: impl IntoIterator<Item = (Key, Node)>) {
+        self.inner.entries.update(|target| {
+            for (key, node) in entries {
+                self.add_entry_into(target, key, node);
+            }
+        });
+    }
+
+    fn add_entry_into(&self, entries: &mut crate::dom::Entries, key: Key, node: Node) {
+        if let Some((existing_key, value)) = entries.lookup.get_key_value(&key) {
+            // Merge the two pseudo-tables together.
+            if let (Node::Table(existing_table), Node::Table(new_table)) = (value, &node) {
+                if existing_table.inner.kind == TableKind::Pseudo
+                    && new_table.inner.kind == TableKind::Pseudo
+                {
+                    let new_entries = new_table.entries().read();
+                    for (k, n) in new_entries.iter() {
+                        if let Some(additional_syntax) = k.syntax() {
+                            existing_key.inner.additional_syntaxes.update(|syntaxes| {
+                                syntaxes.push(additional_syntax.clone());
+                            });
                         }
-                        return;
-                    }
-                }
 
-                self.inner.errors.update(|errors| {
-                    errors.push(Error::ConflictingKeys {
-                        key: key.clone(),
-                        other: existing_key.clone(),
-                    })
-                });
+                        existing_table.add_entry(k.clone(), n.clone());
+                    }
+                    return;
+                }
             }
 
-            entries.add(key, node);
-        });
+            self.inner.errors.update(|errors| {
+                errors.push(Error::ConflictingKeys {
+                    key: key.clone(),
+                    other: existing_key.clone(),
+                })
+            });
+        }
+
+        entries.add(key, node);
     }
 
     fn validate_impl(&self) -> Result<(), &Shared<Vec<Error>>> {
