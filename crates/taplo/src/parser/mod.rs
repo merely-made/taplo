@@ -3,7 +3,7 @@
 use crate::{
     dom::{self, FromSyntax},
     syntax::{SyntaxKind, SyntaxKind::*, SyntaxNode},
-    util::{allowed_chars, check_escape},
+    util::{allowed_chars, check_escape_in},
 };
 use logos::{Lexer, Logos};
 use rowan::{GreenNode, GreenNodeBuilder, NodeCache, TextRange, TextSize};
@@ -52,7 +52,30 @@ pub fn parse(source: &str) -> Parse {
 /// children). The cache never evicts: it keeps every element it has interned
 /// alive until it is dropped, so the caller decides how long it lives.
 pub fn parse_with_cache(source: &str, cache: &mut NodeCache) -> Parse {
-    Parser::with_builder(source, GreenNodeBuilder::with_cache(cache)).parse()
+    parse_with(source, TomlVersion::V1_0, Some(cache))
+}
+
+/// The TOML grammar a parse accepts.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TomlVersion {
+    /// TOML 1.0.0, the grammar of [`parse`].
+    #[default]
+    V1_0,
+    /// TOML 1.1.0: adds the `\e` and `\xHH` escapes, newlines, comments and
+    /// a trailing comma in inline tables, and times without seconds.
+    V1_1,
+}
+
+/// Parse a given TOML version, optionally interning through `cache`
+/// (see [`parse_with_cache`]).
+pub fn parse_with(source: &str, version: TomlVersion, cache: Option<&mut NodeCache>) -> Parse {
+    let builder = match cache {
+        Some(cache) => GreenNodeBuilder::with_cache(cache),
+        None => GreenNodeBuilder::default(),
+    };
+    let mut parser = Parser::with_builder(source, builder);
+    parser.version = version;
+    parser.parse()
 }
 
 /// A hand-written parser that uses the Logos lexer
@@ -83,6 +106,7 @@ pub(crate) struct Parser<'p> {
     lexer: Lexer<'p, SyntaxKind>,
     builder: GreenNodeBuilder<'p>,
     errors: Vec<Error>,
+    version: TomlVersion,
 }
 
 impl Parser<'_> {
@@ -123,6 +147,7 @@ impl<'p> Parser<'p> {
             lexer: SyntaxKind::lexer(source),
             builder,
             errors: Default::default(),
+            version: TomlVersion::V1_0,
         }
     }
 
@@ -561,7 +586,7 @@ impl<'p> Parser<'p> {
                     }
                 };
 
-                match check_escape(self.lexer.slice()) {
+                match check_escape_in(self.lexer.slice(), self.version) {
                     Ok(_) => self.token_as(IDENT),
                     Err(err_indices) => {
                         for e in err_indices {
@@ -610,7 +635,8 @@ impl<'p> Parser<'p> {
         };
 
         match t {
-            BOOL | DATE_TIME_OFFSET | DATE_TIME_LOCAL | DATE | TIME => self.token(),
+            BOOL | DATE => self.token(),
+            DATE_TIME_OFFSET | DATE_TIME_LOCAL | TIME => self.time_token(t),
             INTEGER => {
                 // This is probably a logos bug or a priority issue,
                 // for some reason "1979-05-27" gets lexed as INTEGER.
@@ -620,7 +646,7 @@ impl<'p> Parser<'p> {
 
                 // FIXME: probably another logos bug.
                 if self.lexer.slice().contains(':') {
-                    return self.token_as(TIME);
+                    return self.time_token(TIME);
                 }
 
                 // This could've been done more elegantly probably.
@@ -659,7 +685,7 @@ impl<'p> Parser<'p> {
             FLOAT => {
                 // FIXME: probably another logos bug.
                 if self.lexer.slice().contains(':') {
-                    return self.token_as(TIME);
+                    return self.time_token(TIME);
                 }
 
                 let int_slice = if self.lexer.slice().contains('.') {
@@ -729,7 +755,7 @@ impl<'p> Parser<'p> {
                     }
                 };
 
-                match check_escape(self.lexer.slice()) {
+                match check_escape_in(self.lexer.slice(), self.version) {
                     Ok(_) => self.token(),
                     Err(err_indices) => {
                         for e in err_indices {
@@ -765,7 +791,7 @@ impl<'p> Parser<'p> {
                     }
                 };
 
-                match check_escape(self.lexer.slice()) {
+                match check_escape_in(self.lexer.slice(), self.version) {
                     Ok(_) => self.token(),
                     Err(err_indices) => {
                         for e in err_indices {
@@ -800,6 +826,21 @@ impl<'p> Parser<'p> {
         }
     }
 
+    /// A time token, keeping its kind; omitted seconds are an error before TOML 1.1.
+    fn time_token(&mut self, kind: SyntaxKind) -> ParserResult<()> {
+        if self.version < TomlVersion::V1_1 && !has_seconds(self.lexer.slice()) {
+            let span = self.lexer.span();
+            self.add_error(&Error {
+                range: TextRange::new(
+                    TextSize::from(span.start as u32),
+                    TextSize::from(span.end as u32),
+                ),
+                message: "times without seconds require TOML 1.1".into(),
+            });
+        }
+        self.token_as(kind)
+    }
+
     fn parse_inline_table(&mut self) -> ParserResult<()> {
         self.must_token_or(BRACE_START, r#"expected "{""#)?;
 
@@ -814,6 +855,12 @@ impl<'p> Parser<'p> {
             };
 
             match t {
+                BRACE_END if self.version >= TomlVersion::V1_1 => break self.add_token()?,
+                NEWLINE if self.version >= TomlVersion::V1_1 => {
+                    // As in arrays: not an entry, so it does not end `first`.
+                    self.token()?;
+                    continue;
+                }
                 BRACE_END => {
                     if comma_last {
                         // it is still reported as a syntax error,
@@ -909,6 +956,16 @@ impl<'p> Parser<'p> {
         }
         Ok(())
     }
+}
+
+// The time part is the text after the date separator, if any; seconds follow a second ':'.
+fn has_seconds(s: &str) -> bool {
+    let time = match s.find(['T', 't', ' ']) {
+        Some(i) => &s[i + 1..],
+        None => s,
+    };
+    let time = time.split(['Z', 'z', '+', '-']).next().unwrap_or(time);
+    time.matches(':').count() >= 2
 }
 
 fn check_underscores(s: &str, radix: u32) -> bool {
