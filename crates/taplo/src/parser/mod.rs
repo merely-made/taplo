@@ -624,6 +624,7 @@ impl<'p> Parser<'p> {
                 }
             }
             BOOL => self.token_as(IDENT),
+            DATE => self.token_as(IDENT),
             _ => self.error("expected identifier"),
         }
     }

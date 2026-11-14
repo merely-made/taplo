@@ -57,3 +57,63 @@ fn comments_after_tables() {
 
     assert!(errors.is_empty(), "{:#?}", errors);
 }
+
+#[test]
+fn dates_in_table_keys() {
+    let src = r#"
+[2024-01-01]
+2024-01-01 = true
+
+[[2024-01-02]]
+2024-01-01 = true
+"#;
+    let errors = parse(src).errors;
+
+    assert!(errors.is_empty(), "{:#?}", errors);
+}
+
+#[test]
+fn inline_table_with_linebreaks_and_trailing_comma() {
+    let src = r#"
+cooldowns = { 
+    foo = "foo",
+    bar = "bar",
+}
+"#;
+    // TOML 1.1 syntax, so it parses only when 1.1 is asked for.
+    let errors = crate::parser::parse_with(src, crate::parser::TomlVersion::V1_1, None).errors;
+
+    assert!(errors.is_empty(), "{:#?}", errors);
+}
+
+#[test]
+fn get_matches_table_key() {
+    let src = r#"
+name1 = "v"
+other = "v2"
+"#;
+
+    let root = parse(src).into_dom();
+
+    let matched: Vec<String> = root
+        .get_matches("na*")
+        .unwrap()
+        .map(|(k, _)| match k {
+            crate::dom::KeyOrIndex::Key(key) => key.value().to_string(),
+            crate::dom::KeyOrIndex::Index(idx) => idx.to_string(),
+        })
+        .collect();
+
+    assert_eq!(matched, vec!["name1"]);
+}
+
+#[test]
+fn datetime_with_leading_zeros() {
+    let src = r#"
+token_expires_at = 0001-01-01T00:00:00Z
+"#;
+
+    let errors = parse(src).errors;
+
+    assert!(errors.is_empty(), "{:#?}", errors);
+}
